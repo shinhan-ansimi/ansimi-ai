@@ -9,12 +9,11 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 
 from .clean import run_clean
 from .collect import run_collection
 from .config import settings
-from .grid import run_grid
+from .grid import run_grid, save_grid
 from .scoring import compute_safety_score
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(name)s: %(message)s")
@@ -37,8 +36,7 @@ def main() -> None:
 
     logger.info("=== 4단계: 규칙 기반 스코어링 ===")
     grid["safety_score"] = compute_safety_score(grid)
-    grid_csv = os.path.join(settings.output_dir, "grid", "risk_grid.csv")
-    grid.drop(columns="geometry").to_csv(grid_csv, index=False, encoding="utf-8-sig")
+    save_grid(grid)  # csv/geojson 둘 다 safety_score 포함해서 다시 저장 (geojson이 구버전으로 남지 않도록)
 
     logger.info("완료: 총 %d개 격자, safety_score 평균=%.2f, output_dir=%s", len(grid), grid["safety_score"].mean(), settings.output_dir)
 
