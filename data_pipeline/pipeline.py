@@ -1,4 +1,4 @@
-"""전체 파이프라인: 수집(1.4) -> 정제(2.1) -> 격자 생성(2.1).
+"""전체 파이프라인: 수집(1.4) -> 정제(2.1) -> 격자 생성(2.1) -> 스코어링(2.2).
 
 실행:
     cd ansimi-ai
@@ -13,7 +13,8 @@ import logging
 from .clean import run_clean
 from .collect import run_collection
 from .config import settings
-from .grid import run_grid
+from .grid import run_grid, save_grid
+from .scoring import compute_safety_score
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -33,7 +34,11 @@ def main() -> None:
     logger.info("=== 3단계: 격자 생성 (%dm) ===", args.cell_size)
     grid = run_grid(facilities, gu_risk, routes, cell_size_m=args.cell_size)
 
-    logger.info("완료: 총 %d개 격자, output_dir=%s", len(grid), settings.output_dir)
+    logger.info("=== 4단계: 규칙 기반 스코어링 ===")
+    grid["safety_score"] = compute_safety_score(grid)
+    save_grid(grid)  # csv/geojson 둘 다 safety_score 포함해서 다시 저장 (geojson이 구버전으로 남지 않도록)
+
+    logger.info("완료: 총 %d개 격자, safety_score 평균=%.2f, output_dir=%s", len(grid), grid["safety_score"].mean(), settings.output_dir)
 
 
 if __name__ == "__main__":
