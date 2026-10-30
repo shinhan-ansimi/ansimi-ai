@@ -1,11 +1,11 @@
-# 안심이 — AI 파트 (1.4 수집 + 2.1 정제·격자 생성 + 2.2 규칙 기반 스코어링)
+# 안심이 — AI 파트 (1.4 수집 + 2.1 정제·격자 생성 + 2.2 스코어링 + 2.3 API)
 
-간트차트 상 AI 담당 작업 중 **1.4 위험 데이터 조사·수집**, **2.1 정제·격자 생성**,
-**2.2 v1 규칙 가중치 위험도**를 실제로 돌아가는 파이프라인으로 구현한 저장소입니다.
-서울시 공공데이터(CCTV·보안등·비상벨·안심귀갓길 등)를 수집해 정제하고, 서울 전역을
-100m×100m 격자로 나눠 격자별 안전시설 개수·위험요인을 집계한 뒤, 가중치 기반 공식으로
-0~100 안전도 점수(`safety_score`)를 계산합니다. 다음 단계인 **2.3 스코어링 API**는
-여기서 만든 `risk_grid.csv`(`safety_score` 포함)를 FastAPI로 서빙하면 됩니다.
+간트차트 상 AI 담당 작업 **1.4 위험 데이터 조사·수집**, **2.1 정제·격자 생성**,
+**2.2 v1 규칙 가중치 위험도**, **2.3 스코어링 API**를 실제로 돌아가는 파이프라인 +
+FastAPI 서버로 구현한 저장소입니다. 서울시 공공데이터(CCTV·보안등·비상벨·안심귀갓길
+등)를 수집해 정제하고, 서울 전역을 100m×100m 격자로 나눠 격자별 안전시설 개수·
+위험요인을 집계한 뒤, 가중치 기반 공식으로 0~100 안전도 점수(`safety_score`)를
+계산하고, 좌표를 넣으면 그 점수를 돌려주는 API(`fastapi_app/`)까지 제공합니다.
 
 ## 이 저장소에 올라가는 데이터
 
@@ -54,6 +54,9 @@ ansimi-ai/
 │   ├── pipeline.py              # collect → clean → grid 한번에 실행
 │   └── output/                  # 실행 결과물 (git 미추적 — 로컬에서 재생성)
 ├── data_raw/                    # 다운받은 원본 SHP/CSV (git 미추적, 직접 받아서 채울 것)
+├── fastapi_app/                 # 2.3: 스코어링 API
+│   ├── main.py                   # FastAPI 앱 — GET /health, GET /score
+│   └── score.py                  # risk_grid.csv 로드 + 좌표 기준 최근접 격자 조회(GridIndex)
 ├── tools/visualize_preview.py   # 1.4/2.1 결과를 발표용 이미지로 저장
 └── requirements.txt
 ```
@@ -73,6 +76,10 @@ python -m data_pipeline.pipeline --cell-size 100
 
 # 3) 결과를 발표용 이미지로 저장 (docs/collection_map.png, docs/grid_preview.png)
 python3 tools/visualize_preview.py
+
+# 4) 스코어링 API 실행 (risk_grid.csv에 safety_score가 있어야 함 — 파이프라인 먼저 실행)
+uvicorn fastapi_app.main:app --reload
+curl "http://127.0.0.1:8000/score?lat=37.5665&lon=126.9780"
 ```
 
 `.env.example`에 채워야 할 키/파일 경로가 전부 정리돼 있습니다. 카테고리 하나가 비어있으면
@@ -107,8 +114,15 @@ python3 tools/visualize_preview.py
 - 검증: `on_safe_route=1`(공식 안심귀갓길 구간) 격자의 평균 점수가 그 외보다 유의미하게
   높은지 확인합니다(`python -m data_pipeline.scoring` 실행 시 자동 출력 + assert).
 
-## 다음 단계(2.3)와의 연결
+## 스코어링 API(2.3) 설계 메모
 
-`risk_grid.csv`에 이미 `safety_score`(0~100)가 들어있으므로, 2.3에서는 FastAPI
-`/score` 같은 엔드포인트로 이 파일(또는 이걸 옮긴 PostGIS 테이블)을 읽어 좌표나 격자
-ID로 조회해 반환하면 됩니다.
+- `fastapi_app/score.py`의 `GridIndex`가 서버 기동 시 `risk_grid.csv`를 한 번 메모리에
+  올리고, `scipy.spatial.cKDTree`로 좌표 기준 최근접 격자를 빠르게 찾습니다(격자 생성 때와
+  같은 방식, `grid.py`의 `assign_gu_nearest` 참고).
+- `GET /score?lat=&lon=` — 가장 가까운 격자의 `safety_score`, `on_safe_route`,
+  격자 중심 좌표를 반환합니다. 좌표가 서울 bbox(`config.settings`) 밖이면 400,
+  파라미터가 없거나 범위를 벗어나면(위도 -90~90 등) 422를 반환합니다.
+- `GET /health` — 격자가 몇 개 로드됐는지 확인용.
+- 지금은 파일(csv)을 매번 서버 기동 시 메모리로 읽는 구조입니다. 데이터가 자주 갱신되거나
+  여러 서버 인스턴스가 떠야 하면 PostGIS 테이블로 옮기고 `GridIndex`를 쿼리 기반으로
+  바꾸는 걸 고려하세요(지금 구조로는 과한 설계라 넣지 않았습니다).
