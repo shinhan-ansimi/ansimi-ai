@@ -1,4 +1,4 @@
-# 안심이 — AI 파트 (1.4 수집 + 2.1 정제·격자 생성 + 2.2 스코어링 + 2.3 API)
+# 안심이 — AI 파트 (1.4 수집 + 2.1 정제·격자 생성 + 2.2 스코어링 + 2.3 API + v2 LightGBM)
 
 간트차트 상 AI 담당 작업 **1.4 위험 데이터 조사·수집**, **2.1 정제·격자 생성**,
 **2.2 v1 규칙 가중치 위험도**, **2.3 스코어링 API**를 실제로 돌아가는 파이프라인 +
@@ -6,6 +6,8 @@ FastAPI 서버로 구현한 저장소입니다. 서울시 공공데이터(CCTV·
 등)를 수집해 정제하고, 서울 전역을 100m×100m 격자로 나눠 격자별 안전시설 개수·
 위험요인을 집계한 뒤, 가중치 기반 공식으로 0~100 안전도 점수(`safety_score`)를
 계산하고, 좌표를 넣으면 그 점수를 돌려주는 API(`fastapi_app/`)까지 제공합니다.
+간트에는 없던 추가 작업으로, 생활안전지도 범죄주의구간을 대리 라벨 삼은 **LightGBM
+기반 v2(참고용)** 도 구현했습니다(`SAFEMAP_CRIME_WMS_KEY` 있을 때만 동작).
 
 ## 이 저장소에 올라가는 데이터
 
@@ -24,7 +26,8 @@ FastAPI 서버로 구현한 저장소입니다. 서울시 공공데이터(CCTV·
 | 비상벨(서울 전역) | ❌ mock | 행정안전부 안전비상벨위치정보 API — 현재 서버 오류(HTTP_ERROR) |
 | 경찰관서, 편의점 | ❌ mock | 공공데이터포털 — 키 미발급 |
 | 안심택배함, 지킴이집 | ❌ mock | 안심귀갓길 서비스 OA-21697 — 파일/키 미확보 |
-| 심야 생활인구, 범죄율 | ❌ mock | 파일 다운로드 방식 — 파일 미확보 |
+| 심야 생활인구, 범죄율(자치구 통계) | ❌ mock | 파일 다운로드 방식 — 파일 미확보 |
+| 범죄주의구간 등급(LightGBM 학습용 대리 라벨) | ✅ 실데이터 | safemap.go.kr WMS (`SAFEMAP_CRIME_WMS_KEY`) — 위 "범죄율(자치구 통계)"와는 다른 데이터임 |
 
 구별 CCTV 개별 Open API(종로/강북/금천/동작/강서)는 전부 "서비스 종료" 상태를 확인해서
 전국 표준데이터로 대체했습니다. 자세한 소스별 조사 내용은 `docs/01_data_sources.md` 참고.
@@ -51,7 +54,10 @@ ansimi-ai/
 │   ├── collect.py               # 1.4 실행 진입점 (output/raw/*.csv)
 │   ├── clean.py                 # 2.1 정제 (output/clean/*.csv)
 │   ├── grid.py                  # 2.1 격자 생성 (output/grid/risk_grid.csv, .geojson)
-│   ├── pipeline.py              # collect → clean → grid 한번에 실행
+│   ├── scoring.py               # 2.2 v1 규칙 기반 가중합 스코어링 (safety_score)
+│   ├── crime_labels.py          # v2: 범죄주의구간 WMS -> 격자별 crime_hotspot_grade 라벨 추출
+│   ├── lightgbm_scoring.py      # v2: LightGBM 학습·예측 (lgbm_predicted_crime_grade)
+│   ├── pipeline.py              # collect → clean → grid → scoring → (선택)v2 한번에 실행
 │   └── output/                  # 실행 결과물 (git 미추적 — 로컬에서 재생성)
 ├── data_raw/                    # 다운받은 원본 SHP/CSV (git 미추적, 직접 받아서 채울 것)
 ├── fastapi_app/                 # 2.3: 스코어링 API
@@ -84,6 +90,10 @@ curl "http://127.0.0.1:8000/score?lat=37.5665&lon=126.9780"
 
 `.env.example`에 채워야 할 키/파일 경로가 전부 정리돼 있습니다. 카테고리 하나가 비어있으면
 그 카테고리만 mock으로 자동 대체되고 나머지는 정상 진행됩니다.
+
+`SAFEMAP_CRIME_WMS_KEY`가 `.env`에 있으면 파이프라인이 마지막에 v2(LightGBM) 단계까지
+자동으로 돌립니다. macOS에서 LightGBM을 처음 쓰면 `brew install libomp`가 추가로
+필요합니다(OpenMP 런타임 — 없으면 `import lightgbm`에서 바로 에러가 남).
 
 ## 격자(2.1) 설계 메모
 
@@ -126,3 +136,31 @@ curl "http://127.0.0.1:8000/score?lat=37.5665&lon=126.9780"
 - 지금은 파일(csv)을 매번 서버 기동 시 메모리로 읽는 구조입니다. 데이터가 자주 갱신되거나
   여러 서버 인스턴스가 떠야 하면 PostGIS 테이블로 옮기고 `GridIndex`를 쿼리 기반으로
   바꾸는 걸 고려하세요(지금 구조로는 과한 설계라 넣지 않았습니다).
+
+## v2 LightGBM 설계 메모 (간트차트에 없던 추가 작업, Should)
+
+- **왜 필요했나**: v1(규칙 기반) 가중치는 사람이 정한 값이라 "진짜 위험한 곳"과 맞는지
+  검증할 기준이 없었습니다. 그래서 실제 경찰청 데이터(범죄주의구간 등급)를 대리 라벨 삼아
+  학습 모델을 만들어 v1과 비교해볼 수 있게 했습니다.
+- **라벨 추출이 까다로운 이유**: `crime_labels.py`가 쓰는 safemap.go.kr WMS는 "좌표 목록"이
+  아니라 "도로 위에 등급을 색칠한 지도 이미지"를 줍니다. 그래서 ① 범례(색→등급) 조회 →
+  ② 격자 해상도에 맞춘 이미지 한 장 요청 → ③ 픽셀 색을 등급으로 분류 →
+  ④ 격자별로 주변 픽셀 중 최댓값을 `scipy.ndimage.maximum_filter`로 뽑아 라벨로 쓰는
+  과정을 거칩니다(칸 중심이 정확히 도로선 위에 있는 경우가 드물어서, 칸 전체 영역에서
+  최댓값을 찾습니다).
+- **⚠️ 중요한 해석 주의사항**: `on_safe_route=1`(공식 안심귀갓길) 구간이 `crime_hotspot_grade`
+  평균 6.18로, 그 외 구간(1.80)보다 오히려 높게 나옵니다. 버그가 아니라 실제 도시계획
+  패턴입니다 — 지자체가 원래 위험했던 곳에 CCTV·보안등을 설치해 안심귀갓길로 지정하기
+  때문입니다. 그래서 LightGBM의 feature importance 1위가 `dist_to_safe_route_m`이고,
+  "시설이 많을수록 위험하다고 예측"하는 것처럼 보일 수 있는데, 이는 "전반적 안전도"가
+  아니라 "현재 시설 배치 패턴을 봤을 때 범죄주의구간일 가능성"을 학습한 것으로 해석해야
+  합니다.
+- **`low_night_population_risk`/`crime_rate_risk`가 feature importance 상위권인 이유**:
+  이 두 컬럼은 아직 **mock 데이터**입니다(위 데이터 현황 표 참고). 지금 보이는 중요도는
+  자치구 단위에서 우연히 상관된 노이즈일 가능성이 커서, 실데이터로 교체되기 전까지는
+  이 모델의 feature importance를 액면 그대로 믿지 마세요.
+- v1(`safety_score`)은 그대로 두고, v2 결과는 `crime_hotspot_grade`(실측 라벨)와
+  `lgbm_predicted_crime_grade`(예측값) 두 컬럼으로 risk_grid에 추가만 합니다 — 대체가
+  아니라 비교·참고용입니다.
+- `SAFEMAP_CRIME_WMS_KEY`가 없으면 이 단계 전체를 조용히 건너뛰고, v1까지는 정상
+  동작합니다(`pipeline.py`에서 try/except로 감싸서 v2 실패가 v1 결과에 영향 없음).
