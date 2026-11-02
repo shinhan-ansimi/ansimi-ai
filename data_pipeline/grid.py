@@ -147,6 +147,26 @@ def save_grid(grid: gpd.GeoDataFrame) -> tuple[str, str]:
     return geojson_path, csv_path
 
 
+def add_column_to_outputs(column_name: str, values_by_grid_id: pd.Series) -> None:
+    """risk_grid.csv/.geojson에 grid_id 기준으로 컬럼 하나를 추가해 둘 다 다시 저장한다.
+
+    scoring.py 이후 단계(crime_labels.py, lightgbm_scoring.py)처럼 risk_grid.csv만 읽어
+    컬럼 하나를 덧붙이는 모듈이 csv만 쓰고 geojson은 안 건드리면, 두 파일이 서로 다른
+    컬럼 집합을 갖게 되는 문제가 있었다(2.2 PR에서 한 번 발견). 그걸 막으려고 만든 공통 함수.
+    """
+    out_dir = os.path.join(settings.output_dir, "grid")
+    csv_path = os.path.join(out_dir, "risk_grid.csv")
+    geojson_path = os.path.join(out_dir, "risk_grid.geojson")
+
+    csv_df = pd.read_csv(csv_path, encoding="utf-8-sig")
+    csv_df[column_name] = csv_df["grid_id"].map(values_by_grid_id)
+    csv_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+
+    gdf = gpd.read_file(geojson_path)
+    gdf[column_name] = gdf["grid_id"].map(values_by_grid_id)
+    gdf.to_file(geojson_path, driver="GeoJSON")
+
+
 def run_grid(
     facilities: pd.DataFrame,
     gu_risk: pd.DataFrame,
