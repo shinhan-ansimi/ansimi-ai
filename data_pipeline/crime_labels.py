@@ -21,6 +21,7 @@ from PIL import Image
 from scipy.ndimage import maximum_filter
 
 from .config import settings
+from .grid import add_column_to_outputs
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +124,7 @@ def run(grid_csv: str, api_key: str | None = None) -> pd.DataFrame | None:
 
     grid = pd.read_csv(grid_csv, encoding="utf-8-sig")
     grid["crime_hotspot_grade"] = extract_grid_labels(grid, api_key)
-    grid.to_csv(grid_csv, index=False, encoding="utf-8-sig")
+    add_column_to_outputs("crime_hotspot_grade", grid.set_index("grid_id")["crime_hotspot_grade"])
     return grid
 
 

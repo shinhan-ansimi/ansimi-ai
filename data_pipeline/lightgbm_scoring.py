@@ -21,6 +21,7 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.model_selection import train_test_split
 
 from .config import settings
+from .grid import add_column_to_outputs
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ def run(grid_csv: str) -> pd.DataFrame:
     features = _feature_columns(grid)
     pred = model.predict(grid[features].fillna(0)).clip(0, 10)  # 등급은 0~10 범위, 회귀 예측은 경계 밖으로 나갈 수 있어 clip
     grid[PREDICTION_COLUMN] = pred.round(2)
-    grid.to_csv(grid_csv, index=False, encoding="utf-8-sig")
+    add_column_to_outputs(PREDICTION_COLUMN, grid.set_index("grid_id")[PREDICTION_COLUMN])
     return grid
 
 
